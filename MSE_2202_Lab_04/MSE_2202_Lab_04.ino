@@ -437,18 +437,18 @@ void loop()
                     // arm has settled on its position
                     // for a couple ms
                     //**********************************
+                    
                     //Keep motors stopped
                     ui_Left_Motor_Speed  = ci_Left_Motor_Stop;
                     ui_Right_Motor_Speed = ci_Right_Motor_Stop;
-
-                    //Grab flag
-                    getRange();  //NEEDS TO BE CALLED BEFORE getAvgRange()
+                  
+                    getRange();  //Must be called to se the current range for getAvgRange()
                     avgRange = getAvgRange();
                     if(SetReach(avgRange)){
                         static bool closing = false;
                         static unsigned long closeTime;
                         if(!closing){
-                            OpenGrip(0);
+                            OpenGrip(0);                 //Grab flag
                             closeTime = millis();
                             closing = true;
                         }
@@ -459,8 +459,7 @@ void loop()
                     }
                     break;
                 case 4:
-                    //Reverse until at a nice distance
-                    //Drive backward on sonar
+                    //Reverse using sonar until at a nice distance
                     if((range=getRange())<90){
                         SetReach(0);  //Retract arm
                         //Reverse motor speeds
