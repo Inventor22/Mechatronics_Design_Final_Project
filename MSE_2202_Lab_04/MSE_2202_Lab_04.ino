@@ -398,43 +398,53 @@ void loop()
 
                     break;
                 case 2:
-                  //Drive forward on sonar
-                  //Want to get within 4 cm of desired range
-                  static const int desiredRange(60);
-                  range    = getRange();  //Instant range
-                  avgRange = getAvgRange(); //Range averaged over n cycles
-                  if((range<(desiredRange+50))&&(range>=(desiredRange+10))){
-                    //Time to drive really slow (right at stall speed)
-                    constrainMotorSpeeds(1650);            
-                  }
-                  //else if((range<(desiredRange+10))&&(range>(desiredRange-1))){
-                  else if(range<(desiredRange+10)){  //If closer than 1 cm to the desired range, stop
-                    ui_Left_Motor_Speed = ci_Left_Motor_Stop;
-                    ui_Right_Motor_Speed = ci_Right_Motor_Stop;
-                    //Wait for the arm to settle before 
-                    static byte timeStopped(0);
-                    if(SetReach(avgRange+108)){ 
-                      if(!timeStopped){
-                        timeStopped=millis();
+                    //*****************************
+                    // Drive forward on sonar
+                    // Get within 6 cm of the box
+                    //*****************************
+                    static const int desiredRange(60);
+                    
+                    range    = getRange();  //Instant range
+                    avgRange = getAvgRange(); //Range averaged over n cycles
+                    
+                    if((range<(desiredRange+50))&&(range>=(desiredRange+10))){
+                      //Time to drive really slow (right at stall speed)
+                      //Actually decelerating here
+                      constrainMotorSpeeds(1650);            
+                    }
+                    //else if((range<(desiredRange+10))&&(range>(desiredRange-1))){  //Used to back up
+                    else if(range<(desiredRange+10)){  //If closer than 1 cm to the desired range, stop
+                      ui_Left_Motor_Speed = ci_Left_Motor_Stop;
+                      ui_Right_Motor_Speed = ci_Right_Motor_Stop;
+                      //Wait for the arm to settle before 
+                      static byte timeSettled(0);
+                      if(SetReach(avgRange+108)){ 
+                        if(!timeSettled){
+                          timeSettled=millis();
+                        }
+                        else if((millis()-timeSettled)>100){ //Make sure that the arm is stable for 1/10 of a second before advancing
+                          subMode++;
+                        }
                       }
-                      else if((millis()-timeStopped)>100){ //Make sure that the arm is stable for 1/10 of a second before advancing
-                        subMode++;
+                      else {
+                          timeSettled = 0;
                       }
                     }
-                    else {
-                        timeStopped = 0;
-                    }
-                  }
-                  break;
+                    break;
                 case 3:
+                    //**********************************
+                    // Pick up flag as soon as the
+                    // arm has settled on its position
+                    // for a couple ms
+                    //**********************************
                     //Keep motors stopped
-                    ui_Left_Motor_Speed = ci_Left_Motor_Stop;
+                    ui_Left_Motor_Speed  = ci_Left_Motor_Stop;
                     ui_Right_Motor_Speed = ci_Right_Motor_Stop;
 
                     //Grab flag
                     getRange();  //NEEDS TO BE CALLED BEFORE getAvgRange()
-                    range = getAvgRange();
-                    if(SetReach(range)){
+                    avgRange = getAvgRange();
+                    if(SetReach(avgRange)){
                         static bool closing = false;
                         static unsigned long closeTime;
                         if(!closing){
@@ -452,10 +462,10 @@ void loop()
                     //Reverse until at a nice distance
                     //Drive backward on sonar
                     if((range=getRange())<90){
-                        SetReach(0);
+                        SetReach(0);  //Retract arm
                         //Reverse motor speeds
-                        ui_Motors_Speed = 1500 - (ui_Motors_Speed - 1500);
-                        ui_Left_Motor_Speed = constrain(ui_Motors_Speed + ui_Left_Motor_Offset, 1350, 1100);
+                        ui_Motors_Speed = 1500 - (ui_Motors_Speed - 1500);  //Could be changed to 3000 - ui_Motors_Speed, but this is more readable
+                        ui_Left_Motor_Speed = constrain(ui_Motors_Speed + ui_Left_Motor_Offset, 1350, 1100);  //Reverse the constrain
                         ui_Right_Motor_Speed = constrain(ui_Motors_Speed + ui_Right_Motor_Offset, 1350, 1100);
                     }
                     //END: range met
@@ -483,16 +493,19 @@ void loop()
                     //END: LEDS all lit
                     break;
                 case 7:
+                  
                     // release flag, idle robot
-                    OpenGrip(true);
-                    subMode = 0;
-                    ui_Robot_State_Index = 0;
+                    getRange();
+                    if(SetReach(getAvgRange())){   // Wait for arm to settle for even an instant
+                      OpenGrip(true);              // Drop flag
+                      subMode = 0;                 // Reset subMode to 0
+                      ui_Robot_State_Index = 0;    // Reset robot to mode 0
+                    }
                     //END: All black
                     break;
                 default:
                     break;
                 }
-
 
 
 
