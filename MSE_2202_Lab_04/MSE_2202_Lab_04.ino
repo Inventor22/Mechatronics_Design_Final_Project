@@ -15,11 +15,13 @@ Servo servo_ArmMotor;
 Servo servo_GripMotor;
 // Uncomment keywords to enable debugging output
 //#define DEBUG_MODE_DISPLAY
+#define DEBUG_SUB_MODE_DISPLAY
 //#define DEBUG_MOTORS
 #define DEBUG_ARM_CONTROL
 //#define DEBUG_LINE_TRACKERS
 //#define DEBUG_ENCODERS
 //#define DEBUG_ULTRASONIC
+#define DEBUG_RANGE_FINDING
 //#define DEBUG_LINE_TRACKER_CALIBRATION
 //#define DEBUG_MOTOR_CALIBRATION
 #define DEBUG_POT
@@ -336,8 +338,7 @@ void loop()
                 // read pot to set top motor speed
                 ui_Motors_Speed = analogRead(ci_Motor_Speed_Pot);
                 ui_Motors_Speed = map(ui_Motors_Speed, 0, 1023, 1650, 1900); // motors stall below 1650; too fast above // apply motor offsets
-                ui_Left_Motor_Speed = constrain(ui_Motors_Speed - ui_Left_Motor_Offset, 1650, 1900);
-                ui_Right_Motor_Speed = constrain(ui_Motors_Speed - ui_Right_Motor_Offset, 1650, 1900);
+                constrainMotorSpeeds(ui_Motors_Speed);
                 // read levels from line tracking sensors
                 readLineTrackers();
                 // read encoder counts
@@ -370,8 +371,10 @@ void loop()
 
                 static byte subMode(1);
 
+                #ifdef DEBUG_SUB_MODE_DISPLAY
                 Serial.print("SM: ");
                 Serial.println(subMode);
+                #endif
 
                 uint16_t range;  //Instant range
                 uint16_t avgRange;
@@ -399,11 +402,10 @@ void loop()
                   //Want to get within 4 cm of desired range
                   static const int desiredRange(60);
                   range    = getRange();  //Instant range
-                  avgRange = getRange2(); //Range averaged over 10 cycles
-                  if((range<(desiredRange+50))&&(range>(desiredRange+10))){
+                  avgRange = getAvgRange(); //Range averaged over n cycles
+                  if((range<(desiredRange+50))&&(range>=(desiredRange+10))){
                     //Time to drive really slow (right at stall speed)
-                    ui_Left_Motor_Speed = 1650;
-                    ui_Right_Motor_Speed = 1650;              
+                    constrainMotorSpeeds(1650);            
                   }
                   //else if((range<(desiredRange+10))&&(range>(desiredRange-1))){
                   else if(range<(desiredRange+10)){  //If closer than 1 cm to the desired range, stop
@@ -415,7 +417,7 @@ void loop()
                       if(!timeStopped){
                         timeStopped=millis();
                       }
-                      else if((millis()-timeStopped)>100) {
+                      else if((millis()-timeStopped)>100){ //Make sure that the arm is stable for 1/10 of a second before advancing
                         subMode++;
                       }
                     }
@@ -430,8 +432,8 @@ void loop()
                     ui_Right_Motor_Speed = ci_Right_Motor_Stop;
 
                     //Grab flag
-                    getRange();  //NEEDS TO BE CALLED BEFORE getRange2()
-                    range = getRange2();
+                    getRange();  //NEEDS TO BE CALLED BEFORE getAvgRange()
+                    range = getAvgRange();
                     if(SetReach(range)){
                         static bool closing = false;
                         static unsigned long closeTime;
@@ -836,7 +838,14 @@ bool turnAround() {
     return true;
 }
 
-//Argument is in cm!
+//Arguement varies from 1650 to 1900
+//This function ensures that the robot drives in a straight line
+void constrainMotorSpeeds(unsigned int motorSpeed){
+  ui_Left_Motor_Speed = constrain(motorSpeed - ui_Left_Motor_Offset, 1650, 1900);
+  ui_Right_Motor_Speed = constrain(motorSpeed - ui_Right_Motor_Offset, 1650, 1900);
+}
+
+//True opens the grip
 void OpenGrip(boolean openGrip){
     if(openGrip)
         servo_GripMotor.write(ci_Grip_Motor_Open);
@@ -848,24 +857,15 @@ void OpenGrip(boolean openGrip){
 uint16_t getRange(){
     Ping();
 
-    //static unsigned long hist[10] = {0};
-    //static int index(0);
-
-    //hist[index] = ul_Echo_Time;
-    //index++;
-    //if (index>9) index = 0;
-
-    //unsigned long dist(0);
-    //for (int j=0; j<10; j++) {
-    //    if (hist[j]==0) hist[j]=ul_Echo_Time;
-    //    dist += hist[j];
-    //}
-
-    //Serial.println(ul_Echo_Time*10/58);
+    #ifdef DEBUG_RANGE_FINDING
+    Serial.print("Current range: ");
+    Serial.print(ul_Echo_Time*10/58);
+    Serial.print(" mm");
+    #endif
     return (uint16_t)(ul_Echo_Time*10/58);
 }
 
-uint16_t getRange2(){
+uint16_t getAvgRange(){
     //Ping();  //Can't ping too often (also prevents wasting time)
 
     const byte entries(5);
@@ -882,8 +882,13 @@ uint16_t getRange2(){
         dist += hist[j];
     }
 
-    //Serial.print(ul_Echo_Time);
-    //Serial.println(dist/58);
+    #ifdef DEBUG_RANGE_FINDING
+    Serial.print("Average range over last ");
+    Serial.print(entries);
+    Serial.print(" readings: ");
+    Serial.print(dist/58);
+    Serial.println(" mm");
+    #endif
     return (uint16_t)(dist/58);
 }
 
@@ -895,20 +900,13 @@ bool SetReach(int reach){
     const int ci_MinCM = 110;
     const int ci_Max_Length = 1010;
     const int ci_Min_Length = 150;
-    const int ci_Arm_Extend_Speed = 1300;
-    const int ci_Arm_Retract_Speed = 1700;
+    const int ci_Arm_Extend_Speed = 1200;
+    const int ci_Arm_Retract_Speed = 1800;
     int i_Arm_Length = analogRead(ci_Arm_Length_Pot);
 
     //Convert cm to distance
     reach = constrain(reach, ci_MinCM, ci_MaxCM);
     reach = map(reach, ci_MinCM, ci_MaxCM, ci_Min_Length, ci_Max_Length);
-    
-    #ifdef DEBUG_ARM_CONTROL
-    Serial.print("Current reach: ");
-    Serial.println(i_Arm_Length);
-    Serial.print("Desired reach: ");
-    Serial.println(reach);
-    #endif
 
     if(i_Arm_Length>(reach+150)){
         servo_ArmMotor.writeMicroseconds(ci_Arm_Retract_Speed);  //Pull back from too far forward
@@ -926,6 +924,15 @@ bool SetReach(int reach){
         servo_ArmMotor.writeMicroseconds(200);                   //Acceptably close, stop motor
         stable = true;
     }
+
+    #ifdef DEBUG_ARM_CONTROL
+    Serial.print("Current reach: ");
+    Serial.println(i_Arm_Length);
+    Serial.print("Desired reach: ");
+    Serial.println(reach);
+    Serial.print("Arm movement stable: ");
+    Serial.println(stable);
+    #endif
 
     return stable;
 }
