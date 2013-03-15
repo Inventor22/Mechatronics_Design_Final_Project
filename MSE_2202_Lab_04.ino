@@ -21,8 +21,10 @@ Servo servo_GripMotor;
 //#define DEBUG_ULTRASONIC
 //#define DEBUG_LINE_TRACKER_CALIBRATION
 //#define DEBUG_MOTOR_CALIBRATION
-#define DEBUG_POT
-#define DEBUG_PID_CONTROLLER
+//#define DEBUG_POT
+
+//#define DEBUG_PID_CONTROLLER
+
 //port pin constants
 const int ci_encoder_Pin_A[2] = {2,3};
 const int ci_Grip_Motor = 4;
@@ -149,6 +151,7 @@ struct PidController {
     float kP, kI, kD; // tuning constants.
     const float iMin, iMax;
     float proportional, integral, derivative;
+    int updateFrequency;
 
     T targetPos;
     DeltaVar<T> error;
@@ -158,6 +161,7 @@ struct PidController {
         kP(_kP), kI(_kI), kD(_kD), iMin(_iMin), iMax(_iMax), targetPos(_targetPos), p_getError(_p_getError) {
             error.now  = 0;
             error.prev = 0;
+            updateFrequency = 5; // 200 Hz refresh rate
 #ifdef DEBUG_PID_CONTROLLER
             Serial.print("kP: ");
             Serial.println(kP);
@@ -175,14 +179,17 @@ struct PidController {
         return (*p_getError)(sensorState);
     }
     float update(T currentPos) {
-        error.now    =  targetPos - currentPos;
-        proportional =  error.now * kP;
-        integral     += error.now;
-        if (integral < iMin) integral = iMin;
-        if (integral > iMax) integral = iMax;
-        derivative   =  error.rateOfChange() * kD;
-        error.prev   =  error.now;
-        return proportional + (integral * kI) + derivative;
+        static uint32_t then = millis();
+        if (millis() - then > updateFrequency) {
+            error.now    =  targetPos - currentPos;
+            proportional =  error.now;
+            integral     += error.now;
+            if (integral <  iMin) integral = iMin;
+            if (integral >  iMax) integral = iMax;
+            derivative   =  error.rateOfChange();
+            error.prev   =  error.now;
+        }
+        return proportional*kP + integral*kI + derivative*kD;
     }
 };
 
@@ -221,6 +228,8 @@ const int adr_kp = 20;
 const int adr_ki = 30;
 const int adr_kd = 40;
 
+uint16_t  range  = 0;
+
 void setup()
 {
     Serial.begin(9600);
@@ -229,15 +238,22 @@ void setup()
     //EEPROM_readAnything<float>(adr_ki, i);
     //EEPROM_readAnything<float>(adr_kd, d);
 
-    pid = new PidController<int8_t, uint8_t>(195, // kP
-                                             1.11,   // kI
-                                             152,   // kD
-                                             -250.0, // integral Min
-                                              250.0, // integral Max
-                                              0,   // target Position
-                                              &calcError); // error function
+    /* *** WORKING ***
+    P = 140
+    I = 2
+    D = 260
+    */
 
-    
+    pid = new PidController<int8_t, uint8_t>(
+        140, // kP 195
+        2,   // kI
+        260,   // kD 152
+       -20.0, // integral Min
+        20.0, // integral Max
+        0,   // target Position
+        &calcError); // error function
+
+
     pinMode(13,OUTPUT);
     CharliePlexing::set(); // Set up Charlieplexing for LEDs
     // set up ultrasonic
@@ -358,8 +374,8 @@ void loop()
                 // Line tracking code here...
 
                 //switch (stage) {
-    //case FOLLOW_LINE:
-    //case GRAB_FLAG:
+                //case FOLLOW_LINE:
+                //case GRAB_FLAG:
 
                 int8_t sensorStates = (sensorState[LEFT]   << 2) +
                     (sensorState[MIDDLE] << 1) +
@@ -372,7 +388,7 @@ void loop()
                 Serial.print("SM: ");
                 Serial.println(subMode);
 
-                switch (subMode){
+                switch (subMode) {
                 case 1:
                     //Drive forward using PID
                     //END: all black
@@ -385,49 +401,58 @@ void loop()
                     }
                     if (errorCount > 5) {
                         subMode++;
-
                         OpenGrip(1);
                     }
 
                     break;
-                case 2:
-                  //Drive forward on sonar
-                  //Want to get within 4 cm of desired range
-                  static const int desiredRange(60);
-                  uint16_t range;
-                  if(((range=getRange())<(desiredRange+50))&&(range>(desiredRange+10))){
-                    //Time to drive really slow
-                    ui_Left_Motor_Speed = 1650;
-                    ui_Right_Motor_Speed = 1650;              
-                  }
-                  //else if((range<(desiredRange+10))&&(range>(desiredRange-1))){
-                  else if(range<(desiredRange+10)){
-                    ui_Left_Motor_Speed = ci_Left_Motor_Stop;
-                    ui_Right_Motor_Speed = ci_Right_Motor_Stop;
-                    //Evaluated that we've stayed at the right distance
-                    //Use the SetRange return val
-                    static byte timeStopped(0);
-                    if(SetReach(getRange2()+108)){ 
-                      if(!timeStopped) {
-                        timeStopped=millis();
-                      } 
-                      else if((millis()-timeStopped)>100) {
-                        //subMode=2;
+                case 2: {
+                    //Drive forward on sonar
+                    //Want to get within 4 cm of desired range
+
+                    uint16_t flagRange = getRange();
+                    if (flagRange < 70) {
                         subMode++;
-                      }
-                    } 
-                    else {
-                        timeStopped = 0;
+                    } else {
+                        int speed = map(flagRange, 70, 450, 1500, MAX_SPEED_FWD);
+                        ui_Left_Motor_Speed  = speed;
+                        ui_Right_Motor_Speed = speed;
                     }
-                  }
-                  break;
+
+                    //static const int desiredRange(60);
+                    //uint16_t range;
+                    //if(((range=getRange())<(desiredRange+50))&&(range>(desiredRange+10))){
+                    //    //Time to drive really slow
+                    //    ui_Left_Motor_Speed = 1650;
+                    //    ui_Right_Motor_Speed = 1650;              
+                    //}
+                    ////else if((range<(desiredRange+10))&&(range>(desiredRange-1))){
+                    //else if(range<(desiredRange+10)){
+                    //    ui_Left_Motor_Speed = ci_Left_Motor_Stop;
+                    //    ui_Right_Motor_Speed = ci_Right_Motor_Stop;
+                    //    //Evaluated that we've stayed at the right distance
+                    //    //Use the SetRange return val
+                    //    static byte timeStopped(0);
+                    //    if(SetReach(getRange2()+108)){ 
+                    //        if(!timeStopped) {
+                    //            timeStopped=millis();
+                    //        } 
+                    //        else if((millis()-timeStopped)>100) {
+                    //            //subMode=2;
+                    //            subMode++;
+                    //        }
+                    //    } 
+                    //    else {
+                    //        timeStopped = 0;
+                    //    }
+                    //}
+                    break;
+                        }
                 case 3:
                     //Make sure motors stay stopped
                     ui_Left_Motor_Speed = ci_Left_Motor_Stop;
                     ui_Right_Motor_Speed = ci_Right_Motor_Stop;
 
                     //Grab flag
-                    range = getRange();
                     if(SetReach(range)){
                         static bool closing = false;
                         static unsigned long closeTime;
@@ -445,6 +470,7 @@ void loop()
                 case 4:
                     //Reverse until at a nice distance
                     //Drive backward on sonar
+                    uint16_t range;
                     if((range=getRange())<90){
                         SetReach(0);
                         //Reverse motor speeds
@@ -453,7 +479,7 @@ void loop()
                         ui_Right_Motor_Speed = constrain(ui_Motors_Speed + ui_Right_Motor_Offset, 1350, 1100);
                     }
                     //END: range met
-                    else{
+                    else {
                         ui_Left_Motor_Speed  = ci_Left_Motor_Stop;
                         ui_Right_Motor_Speed = ci_Right_Motor_Stop;
                         subMode++;                    
@@ -473,6 +499,7 @@ void loop()
                     if (killMotors) {
                         ui_Left_Motor_Speed = ci_Left_Motor_Stop;
                         ui_Right_Motor_Speed = ci_Right_Motor_Stop;
+                        subMode++;
                     }
                     //END: LEDS all lit
                     break;
@@ -661,28 +688,33 @@ void loop()
                     EEPROM.write(ci_Left_Motor_Offset_Address_L, lowByte(ui_Left_Motor_Offset));
                     EEPROM.write(ci_Left_Motor_Offset_Address_H, highByte(ui_Left_Motor_Offset));
                     ui_Robot_State_Index = 0; // go back to Mode 0
-                    }
-                    ui_Mode_Indicator_Index = 4;
                 }
-                break;
+                ui_Mode_Indicator_Index = 4;
+            }
+            break;
+        }
+    case 5: {
+        servo_LeftMotor.writeMicroseconds(1100);
+        servo_RightMotor.writeMicroseconds(1200);
+        break;
             }
     default:
         {
             ui_Robot_State_Index = 0;
             break;
         }
-        }
-        if((millis() - ul_Display_Time) > ci_Display_Time)
-        {
-            ul_Display_Time = millis();
+    }
+    if((millis() - ul_Display_Time) > ci_Display_Time)
+    {
+        ul_Display_Time = millis();
 # ifdef DEBUG_MODE_DISPLAY
-            Serial.print("Mode: ");
-            Serial.println(ui_Mode_Indicator[ui_Mode_Indicator_Index], DEC);
+        Serial.print("Mode: ");
+        Serial.println(ui_Mode_Indicator[ui_Mode_Indicator_Index], DEC);
 # endif
-            bt_Heartbeat = !bt_Heartbeat;
-            CharliePlexing::Write(ci_Heartbeat_LED, bt_Heartbeat);
-            Indicator();
-        }
+        bt_Heartbeat = !bt_Heartbeat;
+        CharliePlexing::Write(ci_Heartbeat_LED, bt_Heartbeat);
+        Indicator();
+    }
 }
 void Indicator()
 {
@@ -774,7 +806,7 @@ void serialEvent() {
             pid->kP = Serial.readString().toInt();
             Serial.print("kP = ");
             Serial.println(pid->kP);
-           // EEPROM_writeAnything<float>(adr_kp, pid->kP);
+            // EEPROM_writeAnything<float>(adr_kp, pid->kP);
             break;
         case 'i':
             {
@@ -784,7 +816,7 @@ void serialEvent() {
                 pid->kI = atof(n);
                 Serial.print("kI = ");
                 Serial.println(pid->kI);
-            //    EEPROM_writeAnything<float>(adr_ki, pid->kI);
+                //    EEPROM_writeAnything<float>(adr_ki, pid->kI);
             }
             break;
         case 'd':
@@ -795,7 +827,7 @@ void serialEvent() {
                 pid->kD = atof(n);
                 Serial.print("kD = ");
                 Serial.println(pid->kD);
-            //    EEPROM_writeAnything<float>(adr_kd, pid->kD);
+                //    EEPROM_writeAnything<float>(adr_kd, pid->kD);
             }
             break;
         case 'r':
@@ -809,22 +841,27 @@ void serialEvent() {
         case 'm':
             Serial.print("RAM = ");
             Serial.println(freeRam());
+            break;
+        case 'b':
+            Serial.println("Backing up");
+            ui_Robot_State_Index = 5;
         default:
-             break;
+            break;
         }
     }
 }
 
 int freeRam () {
-  extern int __heap_start, *__brkval; 
-  int v; 
-  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
+    extern int __heap_start, *__brkval; 
+    int v; 
+    return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
 }
 
 bool turnAround() {
-    static int encoderCountLeft = ul_encoder_Pos[0], encoderCountRight = ul_encoder_Pos[1];
+    static int encoderCountLeft  = ul_encoder_Pos[0],
+               encoderCountRight = ul_encoder_Pos[1];
     static const int halfTurnTicks = 282;
-    if (ul_encoder_Pos[0] - encoderCountLeft < halfTurnTicks) {
+    if (abs(ul_encoder_Pos[0] - encoderCountLeft) < halfTurnTicks) {
         ui_Left_Motor_Speed  = 1200;
         ui_Right_Motor_Speed = 1800;
         return false;
@@ -832,7 +869,7 @@ bool turnAround() {
     return true;
 }
 
-//Argument is in cm!
+
 void OpenGrip(boolean openGrip){
     if(openGrip)
         servo_GripMotor.write(ci_Grip_Motor_Open);
@@ -914,7 +951,7 @@ bool SetReach(int reach){
     else if(i_Arm_Length<(reach-100)){
         servo_ArmMotor.writeMicroseconds(1400);  //Push forward slowly from slightly too far back
     }
-    else{
+    else {
         servo_ArmMotor.writeMicroseconds(200);                   //Acceptably close, stop motor
         stable = true;
     }
@@ -933,7 +970,11 @@ void followLine(int8_t error) {
         ui_Left_Motor_Speed  = constrain(baseMotorSpeed - correction, MAX_SPEED_REV, MAX_SPEED_FWD);
         ui_Right_Motor_Speed = constrain(baseMotorSpeed + correction, MAX_SPEED_REV, MAX_SPEED_FWD);
 #ifdef DEBUG_PID_CONTROLLER
+        Serial.print(pid->proportional);
+        Serial.print('\t');
         Serial.print(pid->integral);
+        Serial.print('\t');
+        Serial.print(pid->derivative);
         Serial.print('\t');
         Serial.print(correction);
         Serial.print('\t');
